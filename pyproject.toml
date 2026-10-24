@@ -1,0 +1,34 @@
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name = "lakehouse-doctor"
+version = "0.1.0"
+description = "Health checks and one-command fixes for Delta Lake tables: small files, skew, data skipping, log and vacuum."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Amritansh Agrawal" }]
+requires-python = ">=3.10"
+dependencies = ["deltalake>=1.0,<2", "pyarrow>=14"]
+keywords = ["delta-lake", "lakehouse", "databricks", "optimize", "z-order", "data-engineering"]
+classifiers = ["Programming Language :: Python :: 3", "License :: OSI Approved :: MIT License", "Topic :: Database"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.5"]
+
+[project.scripts]
+lakehouse-doctor = "lakehouse_doctor.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lakehouse_doctor"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 140
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]

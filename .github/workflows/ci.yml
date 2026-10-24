@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        include:
+          - os: windows-latest
+            python-version: "3.12"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e ".[dev]"
+      - run: ruff check src tests
+      - run: pytest -q
+      - name: Demo end to end
+        shell: bash
+        run: |
+          python examples/make_messy_table.py demo
+          lakehouse-doctor scan demo --key user_id --target-file-size 1MB
+          lakehouse-doctor fix demo --auto --key user_id --target-file-size 1MB
+          lakehouse-doctor scan demo --key user_id --target-file-size 1MB --fail-under 90
