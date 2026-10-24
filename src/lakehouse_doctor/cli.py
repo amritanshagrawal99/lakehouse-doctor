@@ -1,4 +1,4 @@
-"""`lakehouse-doctor scan PATH` and `lakehouse-doctor fix PATH ...`"""
+"""`lakehouse-doctor scan PATH`, `lakehouse-doctor fix PATH ...` and `lakehouse-doctor fleet ROOT`"""
 from __future__ import annotations
 
 import argparse
@@ -57,6 +57,25 @@ def cmd_scan(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_fleet(a: argparse.Namespace) -> int:
+    from . import fleet
+    cfg = _config(a)
+    if a.catalog:
+        from pyiceberg.catalog import load_catalog
+        props = dict(kv.split("=", 1) for kv in a.catalog_prop) if a.catalog_prop else {}
+        rows = fleet.scan_iceberg_fleet(load_catalog(a.catalog, **props), a.table, cfg)
+    else:
+        rows = fleet.scan_delta_fleet(a.table, cfg)
+    text = fleet.to_json(rows) if a.format == "json" else fleet.to_markdown(rows, a.table)
+    if a.output:
+        Path(a.output).write_text(text, encoding="utf-8")
+    else:
+        sys.stdout.buffer.write(text.encode("utf-8"))
+    if a.fail_under is not None and any(r.score is None or r.score < a.fail_under for r in rows):
+        return 1
+    return 0
+
+
 def cmd_fix(a: argparse.Namespace) -> int:
     cfg = _config(a)
     actions: list[str] = []
@@ -102,7 +121,7 @@ def _summary(detail: dict) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(prog="lakehouse-doctor", description="Health checks and fixes for Delta Lake tables.")
+    p = argparse.ArgumentParser(prog="lakehouse-doctor", description="Health checks and fixes for Delta Lake and Iceberg tables.")
     p.add_argument("--version", action="version", version=f"lakehouse-doctor {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -121,6 +140,13 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("-o", "--output")
     s.add_argument("--fail-under", type=int, help="exit 1 when the health score is below this (for CI)")
     s.set_defaults(func=cmd_scan)
+
+    fl = sub.add_parser("fleet", help="scan every table under a directory (Delta) or a catalog namespace (Iceberg, with --catalog)")
+    common(fl)
+    fl.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    fl.add_argument("-o", "--output")
+    fl.add_argument("--fail-under", type=int, help="exit 1 when any table scores below this")
+    fl.set_defaults(func=cmd_fleet)
 
     f = sub.add_parser("fix", help="apply fixes")
     common(f)
