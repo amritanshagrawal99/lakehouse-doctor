@@ -98,6 +98,30 @@ lakehouse-doctor scan s3://lake/events --storage-option AWS_REGION=ap-south-1 --
 
 `--fail-under` makes it usable as a scheduled data-platform check, failing the job when a table's health drops.
 
+### Which columns to cluster by
+
+LH005 needs to know which columns queries filter on. `keys` works that out from a query log, such as an export of Databricks
+`system.query.history` or Snowflake `QUERY_HISTORY`:
+
+```bash
+$ lakehouse-doctor keys query_log.sql --table demo_events --table-path demo_events
+4/4 queries parsed
+
+| column | point | range | join | score | files/lookup now |
+|---|---|---|---|---|---|
+| `user_id` | 3 | 0 | 0 | 9 | 996.1 |
+| `country` (partition) | 1 | 0 | 0 | 3 | - |
+| `event_ts` | 0 | 1 | 0 | 2 | 40.0 |
+
+Recommended clustering keys: user_id, event_ts
+  OPTIMIZE <table> ZORDER BY (user_id, event_ts)   -- or CLUSTER BY (user_id, event_ts) for liquid clustering
+```
+
+Each query is parsed with sqlglot and table aliases are resolved per scope. Filters are counted per column as point
+(`=`, `IN`), range (`<`, `>`, `BETWEEN`) or join key. Partition columns already prune, so they're shown but not recommended.
+Columns that are only ever joined on are not recommended either. Given `--table-path`, each candidate also shows how many
+files a lookup opens today.
+
 ### Fleet report
 
 ```bash
