@@ -3,7 +3,7 @@
 [![CI](https://github.com/amritanshagrawal99/lakehouse-doctor/actions/workflows/ci.yml/badge.svg)](https://github.com/amritanshagrawal99/lakehouse-doctor/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**Health checks and one-command fixes for Delta Lake tables.** It points at a table (local, S3, ADLS or GCS), reads the
+**Health checks and one-command fixes for Delta Lake and Apache Iceberg tables.** It points at a table (local, S3, ADLS or GCS), reads the
 transaction log and file statistics, and tells you why queries on the table are slow or expensive. It also gives the exact
 `OPTIMIZE` / `ZORDER` / `VACUUM` commands to fix it, and can run them for you with [delta-rs](https://github.com/delta-io/delta-rs).
 
@@ -67,6 +67,12 @@ you ask for it with `--vacuum`.
 | LH005 | Poor data skipping on a key | Average number of files a point lookup must open, from per-file min/max ranges, within each partition | `OPTIMIZE ... ZORDER BY` |
 | LH006 | Log needs a checkpoint | Commits since the last checkpoint | `create_checkpoint()` |
 | LH007 | Vacuumable storage | Unreferenced files older than the retention window, with bytes reclaimable | `VACUUM ... RETAIN n HOURS` |
+| IC001 | Iceberg: snapshots piling up | Retained snapshots against `max_snapshots` | `expire_snapshots` (runs via pyiceberg) |
+| IC002 | Iceberg: too many manifests | Manifests in the current snapshot against data files | `rewrite_manifests` |
+| IC003 | Iceberg: merge-on-read deletes | Rows marked by delete files / data rows | `rewrite_data_files` with `delete-file-threshold` |
+
+LH001–LH005 work the same on both formats. Per-file bounds come from the Delta log or from Iceberg manifests. LH006/LH007
+are specific to Delta, and IC001–IC003 to Iceberg.
 
 The health score starts at 100 and loses 25 points per critical finding and 10 per warning.
 
@@ -92,6 +98,20 @@ lakehouse-doctor scan s3://lake/events --storage-option AWS_REGION=ap-south-1 --
 
 `--fail-under` makes it usable as a scheduled data-platform check, failing the job when a table's health drops.
 
+### Apache Iceberg
+
+```bash
+pip install "lakehouse-doctor[iceberg] @ git+https://github.com/amritanshagrawal99/lakehouse-doctor.git"
+
+# any pyiceberg catalog: REST, Glue, Hive, SQL... (properties as in ~/.pyiceberg.yaml)
+lakehouse-doctor scan db.events --catalog prod --catalog-prop uri=https://catalog.example.com --key user_id
+lakehouse-doctor fix  db.events --catalog prod --expire --retention-hours 168
+```
+
+For Iceberg, findings come with the Spark procedure to run, such as `CALL <catalog>.system.rewrite_data_files(...)` or
+`... strategy => 'sort', sort_order => 'zorder(user_id)'`. pyiceberg can't rewrite data files yet, so `fix` runs snapshot
+expiry only and reports the rewrite commands for you to run.
+
 ## Development
 
 ```bash
@@ -106,7 +126,6 @@ gone and no rows were lost.
 
 ## Roadmap
 
-- Apache Iceberg tables via pyiceberg (manifests already carry per-file bounds)
 - Recommend clustering keys from query history (Databricks `system.query.history`, Snowflake-style)
 - Deletion-vector and `MERGE` amplification checks
 - Scan every table under a Unity Catalog / Glue schema and output a fleet report

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from . import __version__
 from .checks import Config, Severity, health_score, run_checks
-from .fix import apply
+from .fix import apply, apply_iceberg
 from .report import to_json, to_markdown
 from .snapshot import load
 
@@ -31,8 +31,21 @@ def _storage(a: argparse.Namespace) -> dict[str, str] | None:
     return dict(kv.split("=", 1) for kv in a.storage_option) if a.storage_option else None
 
 
+def _iceberg_table(a: argparse.Namespace):
+    from .iceberg import load_catalog_table
+    props = dict(kv.split("=", 1) for kv in a.catalog_prop) if a.catalog_prop else None
+    return load_catalog_table(a.table, a.catalog, props)
+
+
+def _load(a: argparse.Namespace):
+    if a.catalog:
+        from .iceberg import load_iceberg
+        return load_iceberg(_iceberg_table(a), a.table)
+    return load(a.table, _storage(a))
+
+
 def cmd_scan(a: argparse.Namespace) -> int:
-    snap = load(a.table, _storage(a))
+    snap = _load(a)
     findings = run_checks(snap, _config(a))
     text = to_json(snap, findings) if a.format == "json" else to_markdown(snap, findings)
     if a.output:
@@ -48,13 +61,22 @@ def cmd_fix(a: argparse.Namespace) -> int:
     cfg = _config(a)
     actions: list[str] = []
     if a.auto:
-        snap = load(a.table, _storage(a))
+        snap = _load(a)
         for f in run_checks(snap, cfg):
             if f.severity is Severity.INFO:
                 continue
             for fx in f.fixes:
                 if fx.action not in ("none", "vacuum") and fx.action not in actions:
                     actions.append(fx.action)
+    if a.catalog:
+        if a.expire:
+            actions.append("expire")
+        if not actions:
+            print("Nothing to do.")
+            return 0
+        for r in apply_iceberg(_iceberg_table(a), actions, cfg, dry_run=a.dry_run):
+            print(f"{r.action}: {_summary(r.detail)}")
+        return 0
     if a.compact:
         actions.append("compact")
     if a.zorder:
@@ -75,7 +97,7 @@ def cmd_fix(a: argparse.Namespace) -> int:
 
 
 def _summary(detail: dict) -> str:
-    keys = ("numFilesAdded", "numFilesRemoved", "files", "version", "planned", "dry_run")
+    keys = ("numFilesAdded", "numFilesRemoved", "files", "snapshots", "version", "planned", "dry_run", "skipped")
     return ", ".join(f"{k}={detail[k]}" for k in keys if k in detail) or str(detail)
 
 
@@ -85,7 +107,9 @@ def main(argv: list[str] | None = None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     def common(sp):
-        sp.add_argument("table", help="table path or URI (local path, s3://, abfss://, gs://)")
+        sp.add_argument("table", help="Delta table path/URI (local, s3://, abfss://, gs://), or an Iceberg identifier with --catalog")
+        sp.add_argument("--catalog", help="pyiceberg catalog name: treat TABLE as an Iceberg identifier such as db.events")
+        sp.add_argument("--catalog-prop", action="append", metavar="KEY=VALUE", help="pyiceberg catalog property (uri, warehouse, ...)")
         sp.add_argument("--key", action="append", help="column that queries filter on (repeatable); enables the clustering check")
         sp.add_argument("--target-file-size", type=parse_size, default=parse_size("128MB"))
         sp.add_argument("--retention-hours", type=int, default=168)
@@ -105,6 +129,7 @@ def main(argv: list[str] | None = None) -> int:
     f.add_argument("--zorder", metavar="COLS", help="comma-separated columns")
     f.add_argument("--checkpoint", action="store_true")
     f.add_argument("--vacuum", action="store_true", help="delete unreferenced files older than --retention-hours")
+    f.add_argument("--expire", action="store_true", help="Iceberg: expire snapshots older than --retention-hours")
     f.add_argument("--dry-run", action="store_true")
     f.set_defaults(func=cmd_fix)
 
