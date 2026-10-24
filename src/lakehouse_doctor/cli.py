@@ -76,6 +76,37 @@ def cmd_fleet(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_keys(a: argparse.Namespace) -> int:
+    from .checks import files_per_lookup
+    from .keys import analyse, recommend, split_queries
+    rep = analyse(split_queries(Path(a.log).read_text(encoding="utf-8")), a.dialect)
+    snap = load(a.table_path, _storage(a)) if a.table_path else None
+    parts = snap.partition_columns if snap else []
+    print(f"{rep.parsed}/{rep.queries} queries parsed")
+    ranked = rep.ranked(a.table)
+    if not ranked:
+        print(f"no filters on `{a.table}` found in the log")
+        return 0
+    print()
+    print(f"| column | point | range | join | score |{' files/lookup now |' if snap else ''}")
+    print(f"|---|---|---|---|---|{'---|' if snap else ''}")
+    for col, u in ranked[: a.top_n]:
+        note = " (partition)" if col in parts else ""
+        now = ""
+        if snap:
+            fpl = files_per_lookup(snap.files, col)
+            now = f" {fpl:.1f} |" if fpl is not None else " - |"
+        print(f"| `{col}`{note} | {u.point} | {u.range} | {u.join} | {u.score} |{now}")
+    rec = recommend(rep, a.table, parts)
+    if rec:
+        print()
+        print(f"Recommended clustering keys: {', '.join(rec)}")
+        print(f"  OPTIMIZE <table> ZORDER BY ({', '.join(rec)})   -- or CLUSTER BY ({', '.join(rec)}) for liquid clustering")
+        if a.table_path:
+            print(f"  lakehouse-doctor scan {a.table_path} " + " ".join(f"--key {c}" for c in rec))
+    return 0
+
+
 def cmd_fix(a: argparse.Namespace) -> int:
     cfg = _config(a)
     actions: list[str] = []
@@ -147,6 +178,15 @@ def main(argv: list[str] | None = None) -> int:
     fl.add_argument("-o", "--output")
     fl.add_argument("--fail-under", type=int, help="exit 1 when any table scores below this")
     fl.set_defaults(func=cmd_fleet)
+
+    k = sub.add_parser("keys", help="recommend clustering keys from a query log")
+    k.add_argument("log", help="file of SQL queries separated by semicolons (e.g. a query-history export)")
+    k.add_argument("--table", required=True, help="table name as it appears in the queries (last part, e.g. events)")
+    k.add_argument("--table-path", help="optional Delta table path: also measure how well each candidate is clustered today")
+    k.add_argument("--dialect", help="sqlglot dialect of the log (databricks, snowflake, spark, ...)")
+    k.add_argument("--top-n", type=int, default=10)
+    k.add_argument("--storage-option", action="append", metavar="KEY=VALUE")
+    k.set_defaults(func=cmd_keys)
 
     f = sub.add_parser("fix", help="apply fixes")
     common(f)

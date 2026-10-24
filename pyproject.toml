@@ -10,7 +10,7 @@ readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "Amritansh Agrawal" }]
 requires-python = ">=3.10"
-dependencies = ["deltalake>=1.0,<2", "pyarrow>=14"]
+dependencies = ["deltalake>=1.0,<2", "pyarrow>=14", "sqlglot>=30,<31"]
 keywords = ["delta-lake", "lakehouse", "databricks", "optimize", "z-order", "data-engineering"]
 classifiers = ["Programming Language :: Python :: 3", "License :: OSI Approved :: MIT License", "Topic :: Database"]
 

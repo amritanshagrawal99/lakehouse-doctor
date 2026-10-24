@@ -137,7 +137,7 @@ gone and no rows were lost.
 
 ## Roadmap
 
-- Recommend clustering keys from query history (Databricks `system.query.history`, Snowflake-style)
+
 - Deletion-vector and `MERGE` amplification checks
 - Fleet scans of cloud prefixes (s3://, abfss://) and Unity Catalog schemas
 
