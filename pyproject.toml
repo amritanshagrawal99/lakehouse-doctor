@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "lakehouse-doctor"
-version = "0.1.0"
+version = "0.2.0"
 description = "Health checks and fixes for Delta Lake and Apache Iceberg tables: small files, skew, data skipping, snapshots, vacuum."
 readme = "README.md"
 license = { text = "MIT" }
