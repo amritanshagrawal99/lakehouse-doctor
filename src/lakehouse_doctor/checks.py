@@ -36,12 +36,15 @@ class Config:
     checkpoint_interval: int = 100
     vacuum_retention_hours: int = 168
     min_reclaimable_bytes: int = 1 * MB
+    max_snapshots: int = 100          # Iceberg: snapshots kept before expiry is recommended
+    max_manifests_per_snapshot: int = 50
+    max_delete_ratio: float = 0.10    # Iceberg merge-on-read: delete rows / data rows
 
 
 @dataclass
 class Fix:
     sql: str        # Databricks / Spark SQL
-    python: str     # delta-rs equivalent
+    python: str     # delta-rs / pyiceberg equivalent
     action: str     # key understood by `lakehouse-doctor fix`
 
 
@@ -56,7 +59,24 @@ class Finding:
 
 
 def _ident(snap: Snapshot) -> str:
+    if snap.format == "iceberg":
+        return snap.identifier or "<table>"
     return f"delta.`{snap.uri.rstrip('/')}`"
+
+
+def _compact_fix(snap: Snapshot, cfg: Config) -> Fix:
+    if snap.format == "iceberg":
+        return Fix(f"CALL <catalog>.system.rewrite_data_files(table => '{_ident(snap)}', "
+                   f"options => map('target-file-size-bytes', '{cfg.target_file_size}'))",
+                   "# pyiceberg cannot rewrite data files yet; run the Spark procedure", "none")
+    return Fix(f"OPTIMIZE {_ident(snap)}", f"DeltaTable(uri).optimize.compact(target_size={cfg.target_file_size})", "compact")
+
+
+def _zorder_fix(snap: Snapshot, key: str) -> Fix:
+    if snap.format == "iceberg":
+        return Fix(f"CALL <catalog>.system.rewrite_data_files(table => '{_ident(snap)}', strategy => 'sort', "
+                   f"sort_order => 'zorder({key})')", "# pyiceberg cannot sort/rewrite data files yet; run the Spark procedure", "none")
+    return Fix(f"OPTIMIZE {_ident(snap)} ZORDER BY ({key})", f"DeltaTable(uri).optimize.z_order([{key!r}])", f"zorder:{key}")
 
 
 def _fmt_bytes(n: float) -> str:
@@ -84,7 +104,7 @@ def small_files(snap: Snapshot, cfg: Config) -> list[Finding]:
         f"{len(small)} of {n} files are under {_fmt_bytes(threshold)} (average {_fmt_bytes(snap.total_bytes / n)}). "
         f"Compaction would leave about {ideal} file(s). Every extra file costs a metadata read, a task and an object-store request.",
         {"files": n, "small_files": len(small), "avg_file_bytes": snap.total_bytes // n, "files_after_compaction": ideal},
-        [Fix(f"OPTIMIZE {_ident(snap)}", f"DeltaTable(uri).optimize.compact(target_size={cfg.target_file_size})", "compact")],
+        [_compact_fix(snap, cfg)],
     )]
 
 
@@ -148,7 +168,7 @@ def missing_stats(snap: Snapshot, cfg: Config) -> list[Finding]:
         f"{len(no_stats)} of {len(snap.files)} files ({pct:.0f}%) carry no min/max statistics, so queries cannot skip them. "
         "Rewriting them (OPTIMIZE) collects statistics.",
         {"files_without_stats": len(no_stats), "percent": round(pct, 1)},
-        [Fix(f"OPTIMIZE {_ident(snap)}", "DeltaTable(uri).optimize.compact()", "compact")],
+        [_compact_fix(snap, cfg)],
     )]
 
 
@@ -226,7 +246,7 @@ def clustering(snap: Snapshot, cfg: Config) -> list[Finding]:
             f"A filter on `{key}` = value has to open {per_lookup:.1f} of {n:.0f} files{where} on average, because the files' "
             f"min/max ranges overlap. Z-ordering or clustering by `{key}` makes each value land in a few files.",
             {"column": key, "avg_files_per_lookup": round(per_lookup, 2), "files": round(n)},
-            [Fix(f"OPTIMIZE {_ident(snap)} ZORDER BY ({key})", f"DeltaTable(uri).optimize.z_order([{key!r}])", f"zorder:{key}")],
+            [_zorder_fix(snap, key)],
         ))
     return out
 
@@ -250,6 +270,8 @@ def log_health(snap: Snapshot, cfg: Config) -> list[Finding]:
 # ------------------------------------------------------------------ LH007
 
 def vacuumable(snap: Snapshot, cfg: Config) -> list[Finding]:
+    if snap.format != "delta":
+        return []
     try:
         dt = DeltaTable(snap.uri, storage_options=snap.storage_options)
         paths = dt.vacuum(retention_hours=cfg.vacuum_retention_hours, dry_run=True,
@@ -276,7 +298,47 @@ def vacuumable(snap: Snapshot, cfg: Config) -> list[Finding]:
     )]
 
 
-ALL_CHECKS = [small_files, partitioning, missing_stats, clustering, log_health, vacuumable]
+# ------------------------------------------------------------------ IC001-IC003 (Iceberg)
+
+def iceberg_metadata(snap: Snapshot, cfg: Config) -> list[Finding]:
+    ice = snap.iceberg
+    if ice is None:
+        return []
+    out = []
+    if ice.snapshots > cfg.max_snapshots:
+        out.append(Finding(
+            "IC001", Severity.WARNING, "Snapshots are piling up",
+            f"{ice.snapshots} snapshots are retained. Each one keeps its manifest list and the data files only it references, "
+            "so storage and metadata planning time grow with every commit. Expire snapshots outside your time-travel window.",
+            {"snapshots": ice.snapshots, "oldest_snapshot_ms": ice.oldest_snapshot_ms},
+            [Fix(f"CALL <catalog>.system.expire_snapshots(table => '{_ident(snap)}', "
+                 f"older_than => current_timestamp() - INTERVAL {cfg.vacuum_retention_hours} HOURS, retain_last => 10)",
+                 f"table.maintenance.expire_snapshots().older_than(now - timedelta(hours={cfg.vacuum_retention_hours})).commit()",
+                 "expire")],
+        ))
+    if ice.manifests > cfg.max_manifests_per_snapshot and ice.manifests > len(snap.files) / 10:
+        out.append(Finding(
+            "IC002", Severity.WARNING, "Too many manifests",
+            f"The current snapshot has {ice.manifests} manifests for {len(snap.files)} data files. Query planning reads every "
+            "manifest that might match, so many small manifests slow down every query. Rewrite them into a few large ones.",
+            {"manifests": ice.manifests, "data_files": len(snap.files)},
+            [Fix(f"CALL <catalog>.system.rewrite_manifests('{_ident(snap)}')",
+                 "# pyiceberg cannot rewrite manifests yet; run the Spark procedure", "none")],
+        ))
+    if ice.delete_files and snap.total_records and ice.delete_records / snap.total_records > cfg.max_delete_ratio:
+        ratio = ice.delete_records / snap.total_records
+        out.append(Finding(
+            "IC003", Severity.WARNING if ratio < 0.5 else Severity.CRITICAL, "Merge-on-read deletes are piling up",
+            f"{ice.delete_files} delete files mark {ice.delete_records:,} rows deleted ({ratio:.0%} of data rows). Readers apply "
+            "them on every scan. Rewrite the affected data files so deletes are applied once.",
+            {"delete_files": ice.delete_files, "delete_records": ice.delete_records, "ratio": round(ratio, 3)},
+            [Fix(f"CALL <catalog>.system.rewrite_data_files(table => '{_ident(snap)}', options => map('delete-file-threshold', '1'))",
+                 "# run the Spark procedure", "none")],
+        ))
+    return out
+
+
+ALL_CHECKS = [small_files, partitioning, missing_stats, clustering, log_health, vacuumable, iceberg_metadata]
 
 
 def run_checks(snap: Snapshot, cfg: Config) -> list[Finding]:

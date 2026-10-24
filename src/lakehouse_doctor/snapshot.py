@@ -31,6 +31,16 @@ class LogInfo:
 
 
 @dataclass
+class IcebergInfo:
+    snapshots: int
+    oldest_snapshot_ms: int | None
+    current_snapshot_ms: int | None
+    manifests: int
+    delete_files: int
+    delete_records: int
+
+
+@dataclass
 class Snapshot:
     uri: str
     local_path: Path | None
@@ -41,6 +51,9 @@ class Snapshot:
     history: list[dict]  # newest first
     log: LogInfo | None
     storage_options: dict[str, str] | None = None
+    format: str = "delta"           # delta | iceberg
+    identifier: str | None = None   # catalog identifier (Iceberg), e.g. db.events
+    iceberg: IcebergInfo | None = None
 
     @property
     def total_bytes(self) -> int:

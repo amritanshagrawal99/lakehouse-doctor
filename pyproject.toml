@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "lakehouse-doctor"
 version = "0.1.0"
-description = "Health checks and one-command fixes for Delta Lake tables: small files, skew, data skipping, log and vacuum."
+description = "Health checks and fixes for Delta Lake and Apache Iceberg tables: small files, skew, data skipping, snapshots, vacuum."
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "Amritansh Agrawal" }]
@@ -15,7 +15,8 @@ keywords = ["delta-lake", "lakehouse", "databricks", "optimize", "z-order", "dat
 classifiers = ["Programming Language :: Python :: 3", "License :: OSI Approved :: MIT License", "Topic :: Database"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.5"]
+iceberg = ["pyiceberg[pyarrow]>=0.10"]
+dev = ["pytest>=8", "ruff>=0.5", "pyiceberg[pyarrow,sql-sqlite]>=0.10"]
 
 [project.scripts]
 lakehouse-doctor = "lakehouse_doctor.cli:main"
