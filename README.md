@@ -98,6 +98,17 @@ lakehouse-doctor scan s3://lake/events --storage-option AWS_REGION=ap-south-1 --
 
 `--fail-under` makes it usable as a scheduled data-platform check, failing the job when a table's health drops.
 
+### Fleet report
+
+```bash
+lakehouse-doctor fleet /lake/bronze --target-file-size 128MB          # every Delta table under a directory
+lakehouse-doctor fleet analytics --catalog prod --catalog-prop uri=...  # every Iceberg table in a namespace
+lakehouse-doctor fleet /lake --fail-under 70                           # nightly job: fail when any table degrades
+```
+
+The report lists unreadable tables first, then every table ranked worst score first, with file count, size, worst finding and
+total reclaimable storage.
+
 ### Apache Iceberg
 
 ```bash
@@ -128,7 +139,7 @@ gone and no rows were lost.
 
 - Recommend clustering keys from query history (Databricks `system.query.history`, Snowflake-style)
 - Deletion-vector and `MERGE` amplification checks
-- Scan every table under a Unity Catalog / Glue schema and output a fleet report
+- Fleet scans of cloud prefixes (s3://, abfss://) and Unity Catalog schemas
 
 ## License
 
